@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<title>TRAUMATOFONO</title>
+<style>
+    body {
+        margin: 0;
+        overflow: hidden;
+        background-color: black;
+        touch-action: none;
+    }
+    #start {
+        background-color: #00FF00;
+        border: none;
+        width: 80px;
+        height: 80px;
+        cursor: pointer;
+        position: absolute;
+        top: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        border-radius: 50%;
+        font-size: 24px;
+        color: black;
+        font-weight: bold;
+    }
+    .joystick {
+        position: absolute;
+        width: 50px;
+        height: 50px;
+        border-radius: 50%;
+        opacity: 0.8;
+        touch-action: none;
+    }
+</style>
+</head>
+<body>
+<button id="start">▶</button>
+
+<script>
+const startButton = document.getElementById('start');
+
+let audioCtx, node, micStream;
+let freq1=1000, freq2=1000;
+let rate1=10, rate2=10;
+let signalType1=0, signalType2=0;
+let bitPattern=0;
+let lfoRate = 5; // rate LFO 1..10
+let feedback;
+const stepSize = 50;
+
+let lfoPhase = 0;
+
+const joysticks = [
+    {param:'signalType1', color:'green', value:signalType1, max:4},
+    {param:'signalType2', color:'blue', value:signalType2, max:4},
+    {param:'freq1', color:'yellow', value:freq1, max:20000},
+    {param:'rate1', color:'red', value:rate1, max:200},
+    {param:'bitPattern', color:'pink', value:bitPattern, max:1},
+    {param:'lfo1', color:'cyan', value:lfoRate, max:10},
+];
+
+joysticks.forEach(j=>{
+    const div = document.createElement('div');
+    div.className = 'joystick';
+    div.style.backgroundColor = j.color;
+    // Posizione iniziale perfettamente centrata
+    div.style.left = (window.innerWidth/2 - 25)+'px';
+    div.style.top = (window.innerHeight/2 - 25)+'px';
+    document.body.appendChild(div);
+    j.el = div;
+    j.lastStepX = -1;
+    j.lastStepY = -1;
+    j.dragging = false;
+
+    div.addEventListener('touchstart', e => {
+        j.dragging=true; moveJoystick(j,e.touches[0].clientX,e.touches[0].clientY);
+    });
+    div.addEventListener('touchmove', e => {
+        if(j.dragging) moveJoystick(j,e.touches[0].clientX,e.touches[0].clientY); 
+        e.preventDefault();
+    });
+    div.addEventListener('touchend', e => { j.dragging=false; });
+});
+
+function initAudio() {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const bufferSize = 4096;
+    node = audioCtx.createScriptProcessor(bufferSize, 1, 2);
+    feedback = new Float32Array(bufferSize);
+
+    navigator.mediaDevices.getUserMedia({audio:true}).then(stream => {
+        micStream = audioCtx.createMediaStreamSource(stream);
+    }).catch(err => console.log("Microphone access denied:", err));
+
+    node.onaudioprocess = e => {
+        const left = e.outputBuffer.getChannelData(0);
+        const right = e.outputBuffer.getChannelData(1);
+        const bufferSize = e.outputBuffer.length;
+        const sampleRate = audioCtx.sampleRate;
+
+        for(let i=0; i<bufferSize; i++){
+            // fase LFO
+            lfoPhase += (2*Math.PI*lfoRate)/sampleRate;
+            if(lfoPhase > 2*Math.PI) lfoPhase -= 2*Math.PI;
+
+            // LFO oscillante tra 0.1 e 0.9
+            const lfoValue = 0.5 + 0.4 * Math.sin(lfoPhase);
+
+            // --- SIGNAL 1 ---
+            const impulse1 = (i % Math.floor(rate1))===0 ? 1.0 : 0.0;
+            const saw1 = Math.sin(2*Math.PI*i*freq1/bufferSize);
+            const pulse1 = ((i*freq1/bufferSize)%1) > 0.5 ? 1 : -1;
+            const noise1 = Math.random()*2-1;
+            const tri1 = 2*Math.abs(2*((i*freq1/bufferSize)%1)-1)-1;
+            const signals1 = [impulse1, saw1, pulse1, tri1, noise1];
+            let sig1 = Math.round(signals1[signalType1]/lfoValue)*lfoValue;
+
+            // --- SIGNAL 2 ---
+            const impulse2 = (i % Math.floor(rate2))===0 ? 1.0 : 0.0;
+            const saw2 = Math.sin(2*Math.PI*i*freq2/bufferSize);
+            const pulse2 = ((i*freq2/bufferSize)%1) > 0.5 ? 1 : -1;
+            const tri2 = 2*Math.abs(2*((i*freq2/bufferSize)%1)-1)-1;
+            const noise2 = 0;
+            const signals2 = [impulse2, saw2, pulse2, tri2, noise2];
+            let sig2 = Math.round(signals2[signalType2]/lfoValue)*lfoValue;
+
+            // microfono clippato
+            let micSample = 0;
+            if(micStream) micSample = 0;
+
+            // somma segnali + feedback
+            let sig = sig1 + sig2 + 0.4*(feedback[i]||0) + micSample;
+            sig = Math.max(-1, Math.min(1, sig));
+            sig = ((sig + 1) % 2) - 1;
+
+            left[i] = sig;
+            right[i] = sig;
+            feedback[i] = sig;
+        }
+    };
+
+    node.connect(audioCtx.destination);
+}
+
+function moveJoystick(j, x, y){
+    const stepX = Math.floor(x/stepSize);
+    const stepY = Math.floor(y/stepSize);
+    if(stepX !== j.lastStepX || stepY !== j.lastStepY){
+        j.lastStepX = stepX;
+        j.lastStepY = stepY;
+        j.el.style.left = (stepX*stepSize - 25)+'px';
+        j.el.style.top = (stepY*stepSize - 25)+'px';
+        switch(j.param){
+            case 'signalType1': signalType1 = Math.floor(Math.random()*5); break;
+            case 'signalType2': signalType2 = Math.floor(Math.random()*5); break;
+            case 'freq1': freq1 = 20 + Math.random()*19980; break;
+            case 'rate1': rate1 = 1 + Math.random()*199; break;
+            case 'bitPattern': bitPattern = Math.round(Math.random()); break;
+            case 'lfo1': lfoRate = 1 + Math.floor(Math.random()*10); break;
+        }
+    }
+}
+
+startButton.onclick = () => { if(!audioCtx) initAudio(); };
+</script>
+</body>
+</html>
